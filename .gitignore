@@ -1,6 +1,7 @@
 egobody_release/*
 data/*
-__pycache__/*
+**/__pycache__/
 eval_result/*
 tmp/*
 prep_data/*
+.vscode/*

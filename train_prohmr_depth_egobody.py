@@ -73,11 +73,24 @@ def collate_fn(item):
     try:
         item = default_collate(item)
     except Exception as e:
-        import pdb;
-        pdb.set_trace()
+        print(f"❌ Collate error: {e}")
+        raise e  # Re-raise instead of hanging
     return item
 
-
+def to_device(obj, device, exclude_keys=None):
+    """Recursively move tensors to device while preserving structure"""
+    if exclude_keys is None:
+        exclude_keys = []
+    
+    if torch.is_tensor(obj):
+        return obj.to(device, non_blocking=True)
+    elif isinstance(obj, dict):
+        return {k: to_device(v, device, exclude_keys) if k not in exclude_keys else v 
+                for k, v in obj.items()}
+    elif isinstance(obj, (list, tuple)):
+        return type(obj)(to_device(item, device, exclude_keys) for item in obj)
+    else:
+        return obj
 
 def train(writer, logger):
     model_cfg = get_config(args.model_cfg)
@@ -95,17 +108,43 @@ def train(writer, logger):
                                             syn_dataset_file=args.mix_dataset_file,
                                             do_augment=args.do_augment,
                                             split='train', data_source=args.data_source)
-    train_dataloader = torch.utils.data.DataLoader(train_dataset, args.batch_size, shuffle=args.shuffle, num_workers=args.num_workers, collate_fn=collate_fn)
+    #train_dataloader = torch.utils.data.DataLoader(train_dataset, args.batch_size, shuffle=args.shuffle, num_workers=args.num_workers, collate_fn=collate_fn)
+    train_dataloader = torch.utils.data.DataLoader(
+        train_dataset, 
+        args.batch_size, 
+        shuffle=args.shuffle, 
+        num_workers=args.num_workers, 
+        collate_fn=collate_fn,
+        pin_memory=True,      # Faster GPU transfer
+        persistent_workers=True,  # Keep workers alive between epochs
+        prefetch_factor=2     # Prefetch more batches
+    )
     train_dataloader_iter = iter(train_dataloader)
 
 
     val_dataset = ImageDatasetDepthEgoBody(cfg=model_cfg, train=False, device=device, img_dir=args.val_dataset_root,
                                            dataset_file=args.val_dataset_file,
                                            spacing=1, split='val', data_source='real')
-    val_dataloader = torch.utils.data.DataLoader(val_dataset, args.batch_size, shuffle=False, num_workers=args.num_workers)
+    #val_dataloader = torch.utils.data.DataLoader(val_dataset, args.batch_size, shuffle=False, num_workers=args.num_workers)
+    val_dataloader = torch.utils.data.DataLoader(
+        val_dataset, 
+        args.batch_size, 
+        shuffle=False, 
+        num_workers=args.num_workers,
+        pin_memory=True,
+        persistent_workers=True
+    )
 
     mocap_dataset = MoCapDataset(dataset_file='data/datasets/cmu_mocap.npz')
-    mocap_dataloader = torch.utils.data.DataLoader(mocap_dataset, args.batch_size, shuffle=True, num_workers=args.num_workers)
+    # mocap_dataloader = torch.utils.data.DataLoader(mocap_dataset, args.batch_size, shuffle=True, num_workers=args.num_workers)
+    mocap_dataloader = torch.utils.data.DataLoader(
+        mocap_dataset, 
+        args.batch_size, 
+        shuffle=True, 
+        num_workers=args.num_workers,
+        pin_memory=True,
+        persistent_workers=True
+    )
     mocap_dataloader_iter = iter(mocap_dataloader)
 
 
@@ -152,14 +191,8 @@ def train(writer, logger):
                 mocap_batch = next(mocap_dataloader_iter)
 
             # import pdb; pdb.set_trace()
-            for param_name in batch.keys():
-                if param_name not in ['imgname', 'smpl_params', 'has_smpl_params', 'smpl_params_is_axis_angle']:
-                    batch[param_name] = batch[param_name].to(device)
-            for param_name in batch['smpl_params'].keys():
-                batch['smpl_params'][param_name] = batch['smpl_params'][param_name].to(device)
-
-            for param_name in mocap_batch.keys():
-                mocap_batch[param_name] = mocap_batch[param_name].to(device)
+            batch = to_device(batch, device, exclude_keys=['imgname', 'has_smpl_params', 'smpl_params_is_axis_angle'])
+            mocap_batch = to_device(mocap_batch, device)
 
             output = model.training_step(batch, mocap_batch)
 
@@ -177,25 +210,20 @@ def train(writer, logger):
                 val_loss_dict = {}
                 with torch.no_grad():
                     for test_step, test_batch in tqdm(enumerate(val_dataloader)):
-                        for param_name in test_batch.keys():
-                            if param_name not in ['imgname', 'smpl_params', 'has_smpl_params', 'smpl_params_is_axis_angle']:
-                                test_batch[param_name] = test_batch[param_name].to(device)
-                        for param_name in test_batch['smpl_params'].keys():
-                            test_batch['smpl_params'][param_name] = test_batch['smpl_params'][param_name].to(device)
-
+                        test_batch = to_device(test_batch, device, exclude_keys=['imgname', 'has_smpl_params', 'smpl_params_is_axis_angle'])
                         val_output = model.validation_step(test_batch)
 
                         for key in val_output['losses'].keys():
                             if test_step == 0:
-                                val_loss_dict[key] = val_output['losses'][key].detach().clone()
+                                val_loss_dict[key] = val_output['losses'][key].item()
                             else:
-                                val_loss_dict[key] += val_output['losses'][key].detach().clone()
+                                val_loss_dict[key] += val_output['losses'][key].item()
 
                 for key in val_loss_dict.keys():
-                    val_loss_dict[key] = val_loss_dict[key] / test_step
-                    writer.add_scalar('val/{}'.format(key), val_loss_dict[key].item(), total_steps)
+                    val_loss_dict[key] = val_loss_dict[key] / (test_step + 1)
+                    writer.add_scalar('val/{}'.format(key), val_loss_dict[key], total_steps)
                     print_str = '[Step {:d}/ Epoch {:d}] [test]  {}: {:.10f}'. \
-                        format(step, epoch, key, val_loss_dict[key].item())
+                        format(step, epoch, key, val_loss_dict[key])
                     logger.info(print_str)
                     print(print_str)
 

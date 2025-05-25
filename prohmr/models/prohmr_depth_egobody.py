@@ -27,7 +27,7 @@ from prohmr.utils.konia_transform import rotation_matrix_to_angle_axis
 # from prohmr.optimization import OptimizationTask
 from .backbones import create_backbone
 from .heads import SMPLXFlow
-from .discriminator import Discriminator
+from .discriminatorSmplx import DiscriminatorSmplx
 from .losses import Keypoint3DLoss, Keypoint2DLoss, ParameterLoss
 from ..utils.renderer import *
 
@@ -60,7 +60,7 @@ class ProHMRDepthEgobody(nn.Module):
         self.flow = SMPLXFlow(cfg, contect_feats_dim=contect_feats_dim).to(self.device)
 
         # Create discriminator
-        self.discriminator = Discriminator().to(self.device)
+        self.discriminator = DiscriminatorSmplx().to(self.device)
 
         # Define loss functions
         self.keypoint_3d_loss = Keypoint3DLoss(loss_type='l1')
@@ -414,6 +414,8 @@ class ProHMRDepthEgobody(nn.Module):
         # n_sample = body_pose.shape[0] // batch_size
 
         gt_rotmat = aa_to_rotmat(gt_body_pose.view(-1,3)).view(batch_size, -1, 3, 3)  # [bs, 23, 3, 3]
+        if gt_rotmat.shape[1] > 21:  # If GT has more than 21 joints (SMPL format)
+            gt_rotmat = gt_rotmat[:, :21, :, :]  # Take only first 21 joints for SMPL-X discriminator
         disc_fake_out = self.discriminator(body_pose.detach(), betas.detach())  # [bs*n_samples, 25]
         loss_fake = ((disc_fake_out - 0.0) ** 2).sum() / disc_fake_out.shape[0]
         disc_real_out = self.discriminator(gt_rotmat, gt_betas)  # [bs, 25]
@@ -422,6 +424,7 @@ class ProHMRDepthEgobody(nn.Module):
         loss = self.cfg.LOSS_WEIGHTS.ADVERSARIAL * loss_disc
         optimizer.zero_grad()
         loss.backward()
+        torch.nn.utils.clip_grad_norm_(self.discriminator.parameters(), max_norm=1.0)
         # self.manual_backward(loss)
         optimizer.step()
         return loss_disc.detach()
@@ -452,12 +455,38 @@ class ProHMRDepthEgobody(nn.Module):
         num_samples = pred_smpl_params['body_pose'].shape[1]
         ### compute G loss
         loss = self.compute_loss(batch, output, train=True)
-        # ### G adv loss
-        # disc_out = self.discriminator(pred_smpl_params['body_pose'].reshape(batch_size * num_samples, -1), pred_smpl_params['betas'].reshape(batch_size * num_samples, -1))
-        # loss_adv = ((disc_out - 1.0) ** 2).sum() / batch_size
-        #
-        # ### G backward
-        # loss = loss + self.cfg.LOSS_WEIGHTS.ADVERSARIAL * loss_adv
+
+        current_epoch = getattr(self, 'current_epoch', 0)
+
+        # 1. ADAPTIVE ADVERSARIAL WEIGHT
+        adversarial_weight = self.get_adversarial_weight(current_epoch)
+
+        # 2. DISCRIMINATOR LEARNING RATE SCHEDULING  
+        if current_epoch == 15 and not getattr(self, 'disc_lr_reduced', False):
+            print("🔧 Reducing discriminator LR at epoch 15")
+            for param_group in self.optimizer_disc.param_groups:
+                param_group['lr'] *= 0.5
+            self.disc_lr_reduced = True
+        
+        if current_epoch == 25 and not getattr(self, 'disc_lr_reduced_2', False):
+            print("🔧 Further reducing discriminator LR at epoch 25")
+            for param_group in self.optimizer_disc.param_groups:
+                param_group['lr'] *= 0.5
+            self.disc_lr_reduced_2 = True
+        
+        # # ### G adv loss
+        disc_out = self.discriminator(
+            pred_smpl_params['body_pose'].reshape(batch_size * num_samples, -1, 3, 3),  
+            pred_smpl_params['betas'].reshape(batch_size * num_samples, -1)
+        )
+        loss_adv = ((disc_out - 1.0) ** 2).sum() / (batch_size * num_samples)
+        # #
+        # # ### G backward
+        
+        
+
+
+        loss = loss + adversarial_weight * loss_adv
         self.optimizer.zero_grad()
         # self.manual_backward(loss)
         loss.backward()
@@ -466,10 +495,15 @@ class ProHMRDepthEgobody(nn.Module):
 
         # # import pdb; pdb.set_trace()
         # ### D forward, backward
-        # loss_disc = self.training_step_discriminator(mocap_batch, pred_smpl_params['body_pose'].reshape(batch_size * num_samples, -1), pred_smpl_params['betas'].reshape(batch_size * num_samples, -1), self.optimizer_disc)
+        loss_disc = self.training_step_discriminator(
+            mocap_batch, 
+            pred_smpl_params['body_pose'].reshape(batch_size * num_samples, -1, 3, 3),
+            pred_smpl_params['betas'].reshape(batch_size * num_samples, -1), 
+            self.optimizer_disc
+        )
         #
-        # output['losses']['loss_gen'] = loss_adv
-        # output['losses']['loss_disc'] = loss_disc
+        output['losses']['loss_gen'] = loss_adv
+        output['losses']['loss_disc'] = loss_disc
 
         # if self.global_step > 0 and self.global_step % self.cfg.GENERAL.LOG_STEPS == 0:
         #     self.tensorboard_logging(batch, output, self.global_step, train=True)
@@ -529,3 +563,18 @@ class ProHMRDepthEgobody(nn.Module):
             }
         
         return self._default_params_cache[cache_key]
+    
+    def get_adversarial_weight(self, epoch):
+        """Conservative but effective adversarial weight scheduling"""
+        base = self.cfg.LOSS_WEIGHTS.ADVERSARIAL  
+        
+        if epoch < 10:
+            return base * 1.0      # Full strength, proven effective
+        elif epoch < 15:
+            return base * 0.7      # Slight reduction  
+        elif epoch < 20:
+            return base * 0.5      # Moderate reduction
+        elif epoch < 30:
+            return base * 0.2      # Significant reduction
+        else:
+            return base * 0.05     # Minimal influence

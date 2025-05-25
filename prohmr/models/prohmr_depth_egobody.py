@@ -70,10 +70,14 @@ class ProHMRDepthEgobody(nn.Module):
         # Instantiate SMPL model
         # smpl_cfg = {k.lower(): v for k,v in dict(cfg.SMPL).items()}
         # self.smpl = SMPL(**smpl_cfg).to(self.device)
+      
         self.smplx = smplx.create('data/smplx_model', model_type='smplx', gender='neutral', ext='npz').to(self.device)
 
         self.smplx_male = smplx.create('data/smplx_model', model_type='smplx', gender='male', ext='npz').to(self.device)
         self.smplx_female = smplx.create('data/smplx_model', model_type='smplx', gender='female', ext='npz').to(self.device)
+
+        # Cache for default parameters (will be created on first use)
+        self._default_params_cache = {}
 
         # Buffer that shows whetheer we need to initialize ActNorm layers
         self.register_buffer('initialized', torch.tensor(False))
@@ -181,10 +185,16 @@ class ProHMRDepthEgobody(nn.Module):
         pred_smpl_params['betas'] = pred_smpl_params['betas'].reshape(batch_size * num_samples, -1)
         # for k, v in pred_smpl_params.items():
         #     print(k,v.shape)
-        self.smplx = smplx.create('data/smplx_model', model_type='smplx', gender='neutral', ext='npz', batch_size=pred_smpl_params['global_orient'].shape[0]).to(self.device)
+        # self.smplx = smplx.create('data/smplx_model', model_type='smplx', gender='neutral', ext='npz', batch_size=pred_smpl_params['global_orient'].shape[0]).to(self.device)
+        
+        # EFFICIENT: Use pre-created buffers to fill missing parameters
+        target_batch = batch_size * num_samples
+        pred_smpl_params = self._fill_missing_smplx_params(pred_smpl_params, target_batch)
+        
         smplx_output = self.smplx(**{k: v.float() for k,v in pred_smpl_params.items()})
         pred_keypoints_3d = smplx_output.joints  # [bs*num_sample, 127, 3]
         pred_vertices = smplx_output.vertices  # [bs*num_sample, 10475, 3]
+
         output['pred_keypoints_3d'] = pred_keypoints_3d.reshape(batch_size, num_samples, -1, 3)  # [bs, num_sample, 127, 3]
         output['pred_vertices'] = pred_vertices.reshape(batch_size, num_samples, -1, 3)  # [bs, num_sample, 12475, 3]
         output['pred_keypoints_3d_global'] = output['pred_keypoints_3d'] + output['pred_cam'].unsqueeze(-2)  # [bs, n_sample, 127, 3]
@@ -228,16 +238,18 @@ class ProHMRDepthEgobody(nn.Module):
 
         # loss_transl = F.l1_loss(output['pred_cam_t_full'], gt_smpl_params['transl'].unsqueeze(1).repeat(1, num_samples, 1), reduction='mean')
 
-        ####### compute v2v loss
         temp_bs = gt_smpl_params['body_pose'].shape[0]
-        self.smplx_male = smplx.create('data/smplx_model', model_type='smplx', gender='male', ext='npz', batch_size=temp_bs).to(self.device)
-        self.smplx_female = smplx.create('data/smplx_model', model_type='smplx', gender='female', ext='npz', batch_size=temp_bs).to(self.device)
+        
+        # EFFICIENT: Use pre-created buffers for GT parameters too
+        gt_smpl_params = self._fill_missing_smplx_params(gt_smpl_params, temp_bs)
+
         gt_smpl_output = self.smplx_male(**{k: v.float() for k, v in gt_smpl_params.items()})
         gt_vertices = gt_smpl_output.vertices  # smplx vertices
         gt_joints = gt_smpl_output.joints
         gt_smpl_output_female = self.smplx_female(**{k: v.float() for k, v in gt_smpl_params.items()})
         gt_vertices_female = gt_smpl_output_female.vertices
         gt_joints_female = gt_smpl_output_female.joints
+
         gt_vertices[gt_gender == 1, :, :] = gt_vertices_female[gt_gender == 1, :, :]  # [bs, 10475, 3]
         gt_joints[gt_gender == 1, :, :] = gt_joints_female[gt_gender == 1, :, :]
 
@@ -480,3 +492,39 @@ class ProHMRDepthEgobody(nn.Module):
         loss = self.compute_loss(batch, output, train=False)
         return output
 
+    def _fill_missing_smplx_params(self, params_dict, batch_size):
+        """
+        Add missing SMPL-X parameters using cached defaults.
+        """
+        # Get device from existing parameters
+        device = next(iter(params_dict.values())).device
+        
+        # Get default parameters for this batch size and device
+        defaults = self._get_default_smplx_params(batch_size, device)
+        
+        # Only add parameters that don't exist
+        for param_name, default_value in defaults.items():
+            if param_name not in params_dict:
+                params_dict[param_name] = default_value
+        
+        return params_dict
+
+    def _get_default_smplx_params(self, batch_size, device):
+        """
+        Get default SMPL-X parameters, creating and caching them on first use.
+        This ensures they're always on the correct device.
+        """
+        cache_key = f"{batch_size}_{device}"
+        
+        if cache_key not in self._default_params_cache:
+            # Create default parameters on the correct device
+            self._default_params_cache[cache_key] = {
+                'jaw_pose': torch.zeros(batch_size, 3, device=device),
+                'leye_pose': torch.zeros(batch_size, 3, device=device),
+                'reye_pose': torch.zeros(batch_size, 3, device=device),
+                'left_hand_pose': torch.zeros(batch_size, 6, device=device),
+                'right_hand_pose': torch.zeros(batch_size, 6, device=device),
+                'expression': torch.zeros(batch_size, 10, device=device)
+            }
+        
+        return self._default_params_cache[cache_key]

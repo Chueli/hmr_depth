@@ -461,6 +461,7 @@ class ProHMRDepthEgobody(nn.Module):
         self.optimizer.zero_grad()
         # self.manual_backward(loss)
         loss.backward()
+        torch.nn.utils.clip_grad_norm_(self.parameters(), max_norm=1.0) 
         self.optimizer.step()
 
         # # import pdb; pdb.set_trace()

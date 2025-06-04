@@ -26,7 +26,7 @@ import random
 import PIL.Image as pil_img
 import pyrender
 
-from prohmr.models import ProHMRDepthEgobody
+from prohmr.models import ProHMRDepthEgobodyFlowmatching
 # from prohmr.utils.other_utils import coord_transf, coord_multiple_transf, coord_transf_holo_yz_reverse
 from prohmr.utils.pose_utils import reconstruction_error
 from prohmr.utils.renderer import *
@@ -231,7 +231,7 @@ model_cfg.freeze()
 
 
 # Setup model
-model = ProHMRDepthEgobody(cfg=model_cfg, device=device)
+model = ProHMRDepthEgobodyFlowmatching(cfg=model_cfg, device=device)
 weights = torch.load(args.checkpoint, map_location=lambda storage, loc: storage)
 # model.load_state_dict(weights['state_dict'])
 weights_copy = {}

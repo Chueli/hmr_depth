@@ -172,6 +172,55 @@ def train(writer, logger):
     best_loss_keypoints_3d_mode = 10000
     best_loss_keypoints_3d_mode_global = 10000
     for epoch in range(args.num_epoch):
+        # ============== BACKBONE FREEZING LOGIC ==============
+        # Phase 1: Reduce backbone learning rate at epoch 8
+        if epoch == 8 and not hasattr(model, '_backbone_lr_reduced'):
+            logger.info("="*50)
+            logger.info("Epoch 8: Reducing backbone learning rate by 10x")
+            logger.info("="*50)
+            
+            # Recreate optimizers with different learning rates
+            model.optimizer = torch.optim.AdamW([
+                {'params': model.backbone.parameters(), 'lr': model.cfg.TRAIN.LR * 0.1},
+                {'params': model.flow.parameters(), 'lr': model.cfg.TRAIN.LR}
+            ], weight_decay=model.cfg.TRAIN.WEIGHT_DECAY)
+            
+            model.optimizer_disc = torch.optim.AdamW(
+                model.discriminator.parameters(),
+                lr=model.cfg.TRAIN.LR,
+                weight_decay=model.cfg.TRAIN.WEIGHT_DECAY
+            )
+            
+            model._backbone_lr_reduced = True
+        
+        # Phase 2: Freeze backbone at epoch 10
+        if epoch == 10 and not hasattr(model, '_backbone_frozen'):
+            logger.info("="*50)
+            logger.info("Epoch 10: Freezing ConvNeXt backbone")
+            logger.info("="*50)
+            
+            # Set backbone to eval mode and freeze parameters
+            model.backbone.eval()
+            frozen_params = 0
+            for param in model.backbone.parameters():
+                param.requires_grad = False
+                frozen_params += 1
+            
+            logger.info(f"Frozen {frozen_params} backbone parameters")
+            
+            model.optimizer = torch.optim.AdamW(
+                model.flow.parameters(),
+                lr=model.cfg.TRAIN.LR,
+                weight_decay=model.cfg.TRAIN.WEIGHT_DECAY
+            )
+            
+            model.optimizer_disc = torch.optim.AdamW(
+                model.discriminator.parameters(),
+                lr=model.cfg.TRAIN.LR,
+                weight_decay=model.cfg.TRAIN.WEIGHT_DECAY
+            )
+            
+            model._backbone_frozen = True
         # for step, batch in tqdm(enumerate(train_dataloader)):
         #     total_steps += 1
         for step in tqdm(range(train_dataset.dataset_len // args.batch_size)):

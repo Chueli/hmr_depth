@@ -21,7 +21,7 @@ import os
 # os.environ["PYOPENGL_PLATFORM"] = "osmesa"
 
 from prohmr.utils import SkeletonRenderer
-from prohmr.models.backbones.resnet_depth import resnet
+from .backbones.convnext_depth import ConvNeXtDepthBackbone
 from prohmr.utils.geometry import aa_to_rotmat, perspective_projection
 from prohmr.utils.konia_transform import rotation_matrix_to_angle_axis
 # from prohmr.optimization import OptimizationTask
@@ -52,7 +52,11 @@ class ProHMRDepthEgobody(nn.Module):
 
 
         # self.backbone = create_backbone(cfg).to(self.device)
-        self.backbone = resnet().to(self.device)
+        self.backbone = ConvNeXtDepthBackbone(
+            model_name='convnext_tiny.fb_in22k_ft_in1k',  # Best pretrained weights
+            out_features=2048,
+            pretrained=True
+        ).to(self.device)
 
         # Create Normalizing Flow head
         contect_feats_dim = cfg.MODEL.FLOW.CONTEXT_FEATURES

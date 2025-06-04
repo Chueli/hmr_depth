@@ -4,6 +4,7 @@ from .smpl_wrapper import SMPL
 from .discriminator import Discriminator
 from .prohmr_egobody import ProHMREgobody
 from .prohmr_depth_egobody import ProHMRDepthEgobody
+from .prohmr_depth_egobody_flowmatching import ProHMRDepthEgobodyFlowmatching
 from .prohmr_rbg_smplx import ProHMRRGBSmplx
 # from .prohmr_egobody_scene import ProHMREgobodyScene
 # from .prohmr_egobody_scene_bps import ProHMREgobodySceneBPS

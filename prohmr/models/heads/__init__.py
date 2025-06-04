@@ -1,5 +1,6 @@
 from .smpl_flow import SMPLFlow
 from .smplx_flow import SMPLXFlow
+from .smplx_flowmatching import SMPLXFlowMatching
 from .bps_flow import BPSFlow
 from .smpl_flow_bps import SMPLFlowBPS
 from .skeleton_flow import SkeletonFlow

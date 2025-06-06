@@ -90,7 +90,7 @@ dependencies:
       - nbformat==5.10.4
       - nest-asyncio==1.6.0
       - networkx==3.5
-      - nflows==0.14
+      - git+https://github.com/nkolot/nflows.git
       - numpy==2.2.6
       - nvidia-cublas-cu12==12.6.4.1
       - nvidia-cuda-cupti-cu12==12.6.80

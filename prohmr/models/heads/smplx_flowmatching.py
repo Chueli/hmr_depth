@@ -4,46 +4,6 @@ import torch.nn.functional as F
 from typing import Optional, Dict, Tuple
 import numpy as np
 
-# class FastConditionalMLP(nn.Module):
-#     """Improved MLP but optimized for speed."""
-#     def __init__(self, input_dim, context_dim, hidden_dims, output_dim):
-#         super().__init__()
-#         print("init1")
-#         # Simple time embedding (much faster than sinusoidal)
-#         self.time_proj = nn.Linear(1, hidden_dims[0] // 4)
-        
-#         # Context projection
-#         self.context_proj = nn.Linear(context_dim, hidden_dims[0])
-        
-#         # Build MLP layers - keep it reasonably sized
-#         layers = []
-#         in_dim = input_dim + hidden_dims[0] // 4 + hidden_dims[0]  # input + time + context
-        
-#         for i, hidden_dim in enumerate(hidden_dims):
-#             layers.extend([
-#                 nn.Linear(in_dim, hidden_dim),
-#                 nn.LayerNorm(hidden_dim),  # Faster than GroupNorm
-#                 nn.SiLU(),
-#             ])
-#             # Add residual only where dimensions match (avoid extra compute)
-#             if i > 0 and in_dim == hidden_dim:
-#                 layers.append(ResidualWrapper())
-#             in_dim = hidden_dim
-            
-#         layers.append(nn.Linear(in_dim, output_dim))
-#         self.mlp = nn.Sequential(*layers)
-        
-#     def forward(self, x, t, context):
-#         print("forward1")
-#         # Fast projections
-#         t_emb = self.time_proj(t)
-#         context_emb = self.context_proj(context)
-        
-#         # Concatenate and process
-#         h = torch.cat([x, t_emb, context_emb], dim=-1)
-#         return self.mlp(h)
-
-
 class ResidualWrapper(nn.Module):
     """Helper for residual connections where dims match."""
     def forward(self, x):

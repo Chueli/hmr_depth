@@ -52,7 +52,7 @@ class ProHMRDepthEgobodyFlowmatching(nn.Module):
 
         # self.backbone = create_backbone(cfg).to(self.device)
         self.backbone = ConvNeXtDepthBackbone(
-            model_name='convnext_tiny.fb_in22k_ft_in1k',  # Best pretrained weights
+            model_name='convnext_small.fb_in22k_ft_in1k',  # Best pretrained weights
             out_features=2048,
             pretrained=True
         ).to(self.device)

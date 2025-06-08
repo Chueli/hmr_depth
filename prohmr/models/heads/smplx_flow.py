@@ -1,6 +1,6 @@
 import torch
 import torch.nn as nn
-from torch.cuda.amp import autocast
+from torch.amp import autocast
 from typing import Optional, Dict, Tuple
 from nflows.flows import ConditionalGlow
 from yacs.config import CfgNode
@@ -27,7 +27,7 @@ class SMPLXFlow(nn.Module):
 
 
     # Autocasting is disabled because SMPL has numerical instability issues with fp16 parameters.
-    @autocast(enabled=False)
+    @autocast(device_type="cuda", enabled=False)
     def log_prob(self, smpl_params: Dict, feats: torch.Tensor) -> Tuple:
         """
         Compute the log-probability of a set of smpl_params given a batch of images.
@@ -50,7 +50,7 @@ class SMPLXFlow(nn.Module):
         z = z.reshape(batch_size, num_samples, -1)
         return log_prob, z
 
-    @autocast(enabled=False)
+    @autocast(device_type="cuda", enabled=False)
     def forward(self, feats: torch.Tensor, num_samples: Optional[int] = None, z: Optional[torch.Tensor] = None) -> Tuple:
         """
         Run a forward pass of the model.

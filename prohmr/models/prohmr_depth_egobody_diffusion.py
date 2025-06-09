@@ -1,6 +1,5 @@
 import torch
 import torch.nn as nn
-from torch_ema import ExponentialMovingAverage
 
 from typing import Any, Dict, Tuple
 
@@ -61,8 +60,6 @@ class ProHMRDepthEgobodyDiffusion(nn.Module):
 
         # Cache for default parameters (will be created on first use)
         self._default_params_cache = {}
-
-        self.ema = ExponentialMovingAverage(self.diffusion.parameters(), decay=0.9999)
 
 
     def init_optimizers(self):
@@ -350,7 +347,6 @@ class ProHMRDepthEgobodyDiffusion(nn.Module):
         loss.backward()
         torch.nn.utils.clip_grad_norm_(self.parameters(), max_norm=1.0) 
         self.optimizer.step()
-        self.ema.update()
 
         # # import pdb; pdb.set_trace()
         # ### D forward, backward
@@ -382,8 +378,8 @@ class ProHMRDepthEgobodyDiffusion(nn.Module):
         self.backbone.eval()
         self.diffusion.eval()
         
-        with self.ema.average_parameters():
-            output = self.forward_step(batch, train=False)
+
+        output = self.forward_step(batch, train=False)
 
         loss = self.compute_loss(batch, output, train=False)
         return output

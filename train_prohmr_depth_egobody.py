@@ -163,7 +163,7 @@ def train(writer, logger):
             model.load_state_dict(weights_copy['state_dict'], strict=False)
         print('[INFO] pretrained model loaded from {}.'.format(args.checkpoint))
         print('[INFO] load_only_backbone: {}'.format(args.load_only_backbone))
-
+ 
     # optimizer
     model.init_optimizers()
 
@@ -172,16 +172,84 @@ def train(writer, logger):
     best_loss_keypoints_3d_mode = 10000
     best_loss_keypoints_3d_mode_global = 10000
     for epoch in range(args.num_epoch):
-        # ============== BACKBONE FREEZING LOGIC ==============
-        # Phase 1: Reduce backbone learning rate at epoch 8
-        if epoch == 8 and not hasattr(model, '_backbone_lr_reduced'):
+        # ============== PROGRESSIVE FREEZING LOGIC ==============
+        # Phase 1 Freeze only the deepest layers (stages 3)
+        if epoch == -1 and not hasattr(model, '_phase1_frozen'):
             logger.info("="*50)
-            logger.info("Epoch 8: Reducing backbone learning rate by 10x")
+            logger.info("Phase 1 - Freezing only deepest layers (stage 3)")
+            logger.info("="*50)
+
+            del model.optimizer
+            del model.optimizer_disc
+            torch.cuda.empty_cache()
+                     
+            # Freeze only the deepest stage
+            frozen_count = 0
+            trainable_backbone_params = []
+
+            for name, param in model.backbone.named_parameters():
+                # For ConvNeXt: stages.3 is the deepest
+                # Adjust these patterns based on your model structure
+                if any(pattern in name for pattern in ['stages.3', 'stages[3]', 'stage4', 'head']):
+                    param.requires_grad = False
+                    frozen_count += 1
+                else:
+                    trainable_backbone_params.append(param)
+            
+            # Put frozen parts in eval mode
+            model.backbone.model.stages[3].eval()
+            model.backbone.model.head.eval()
+            model.backbone.model.norm_pre.eval()
+            
+            model.optimizer = torch.optim.AdamW([
+                {'params': trainable_backbone_params, 'lr': model.cfg.TRAIN.LR},
+                {'params': model.flow.parameters(), 'lr': model.cfg.TRAIN.LR}
+            ], weight_decay=model.cfg.TRAIN.WEIGHT_DECAY)
+            
+            model.optimizer_disc = torch.optim.AdamW(
+                model.discriminator.parameters(),
+                lr=model.cfg.TRAIN.LR,
+                weight_decay=model.cfg.TRAIN.WEIGHT_DECAY
+            )
+
+            torch.cuda.empty_cache()
+            model._phase1_frozen = True
+            
+            total_params = sum(p.numel() for p in model.parameters())
+            trainable_count = sum(p.numel() for p in model.parameters() if p.requires_grad)
+            logger.info(f"Phase 1: Frozen {frozen_count} parameters in stage 3")
+            logger.info(f"Trainable parameters: {trainable_count:,} / {total_params:,} ({100*trainable_count/total_params:.1f}%)")
+            logger.info(f"GPU memory: {torch.cuda.memory_allocated()/1024**3:.2f} GB")
+        
+        # Phase 2 Additionally freeze stage 2
+        if epoch == -1 and not hasattr(model, '_phase2_frozen'):
+            logger.info("="*50)
+            logger.info("Phase 2 - Additionally freezing stage 2")
             logger.info("="*50)
             
-            # Recreate optimizers with different learning rates
+            # Delete old optimizers to free memory
+            del model.optimizer
+            del model.optimizer_disc
+            torch.cuda.empty_cache()
+            
+            # Freeze stage 2
+            frozen_count = 0
+            trainable_backbone_params = []
+
+            for name, param in model.backbone.named_parameters():
+                if any(pattern in name for pattern in ['stages.2', 'stages[2]', 'stage3']):
+                    if param.requires_grad:  # Only count newly frozen params
+                        param.requires_grad = False
+                        frozen_count += 1
+                else:
+                    if param.requires_grad:
+                        trainable_backbone_params.append(param)
+            
+            # Put frozen parts in eval mode
+            model.backbone.model.stages[2].eval()
+            
             model.optimizer = torch.optim.AdamW([
-                {'params': model.backbone.parameters(), 'lr': model.cfg.TRAIN.LR * 0.1},
+                {'params': trainable_backbone_params, 'lr': model.cfg.TRAIN.LR},
                 {'params': model.flow.parameters(), 'lr': model.cfg.TRAIN.LR}
             ], weight_decay=model.cfg.TRAIN.WEIGHT_DECAY)
             
@@ -191,28 +259,46 @@ def train(writer, logger):
                 weight_decay=model.cfg.TRAIN.WEIGHT_DECAY
             )
             
-            model._backbone_lr_reduced = True
+            torch.cuda.empty_cache()
+            model._phase2_frozen = True
+            
+            total_params = sum(p.numel() for p in model.parameters())
+            trainable_count = sum(p.numel() for p in model.parameters() if p.requires_grad)
+            logger.info(f"Phase 2: Additionally frozen {frozen_count} parameters in stage 2")
+            logger.info(f"Trainable parameters: {trainable_count:,} / {total_params:,} ({100*trainable_count/total_params:.1f}%)")
+            logger.info(f"GPU memory: {torch.cuda.memory_allocated()/1024**3:.2f} GB")
         
-        # Phase 2: Freeze backbone at epoch 10
-        if epoch == 10 and not hasattr(model, '_backbone_frozen'):
+        # Phase 3 Additionally freeze stage 1
+        if epoch == -1 and not hasattr(model, '_phase3_frozen'):
             logger.info("="*50)
-            logger.info("Epoch 10: Freezing ConvNeXt backbone")
+            logger.info("Phase 3 - Freezing stage 1")
             logger.info("="*50)
             
-            # Set backbone to eval mode and freeze parameters
-            model.backbone.eval()
-            frozen_params = 0
-            for param in model.backbone.parameters():
-                param.requires_grad = False
-                frozen_params += 1
+            # Delete old optimizers
+            del model.optimizer
+            del model.optimizer_disc
+            torch.cuda.empty_cache()
             
-            logger.info(f"Frozen {frozen_params} backbone parameters")
+            # Freeze stage 1
+            frozen_count = 0
+            trainable_backbone_params = []
+
+            for name, param in model.backbone.named_parameters():
+                if any(pattern in name for pattern in ['stages.1', 'stages[1]', 'stage2']):
+                    if param.requires_grad:
+                        param.requires_grad = False
+                        frozen_count += 1
+                else:
+                    if param.requires_grad:
+                        trainable_backbone_params.append(param)
             
-            model.optimizer = torch.optim.AdamW(
-                model.flow.parameters(),
-                lr=model.cfg.TRAIN.LR,
-                weight_decay=model.cfg.TRAIN.WEIGHT_DECAY
-            )
+            # Put frozen parts in eval mode
+            model.backbone.model.stages[1].eval()
+
+            model.optimizer = torch.optim.AdamW([
+                {'params': trainable_backbone_params, 'lr': model.cfg.TRAIN.LR},
+                {'params': model.flow.parameters(), 'lr': model.cfg.TRAIN.LR}
+            ], weight_decay=model.cfg.TRAIN.WEIGHT_DECAY)
             
             model.optimizer_disc = torch.optim.AdamW(
                 model.discriminator.parameters(),
@@ -220,10 +306,101 @@ def train(writer, logger):
                 weight_decay=model.cfg.TRAIN.WEIGHT_DECAY
             )
             
-            model._backbone_frozen = True
+            torch.cuda.empty_cache()
+            model._phase3_frozen = True
             
-            # for step, batch in tqdm(enumerate(train_dataloader)):
-            #     total_steps += 1
+            total_params = sum(p.numel() for p in model.parameters())
+            trainable_count = sum(p.numel() for p in model.parameters() if p.requires_grad)
+            logger.info(f"Phase 3: Additionally frozen {frozen_count} parameters in stage 1")
+            logger.info(f"Trainable parameters: {trainable_count:,} / {total_params:,} ({100*trainable_count/total_params:.1f}%)")
+            logger.info(f"GPU memory: {torch.cuda.memory_allocated()/1024**3:.2f} GB")
+        
+        # Phase 4 Additionally freeze stage 0
+        if epoch == -1 and not hasattr(model, '_phase4_frozen'):
+            logger.info("="*50)
+            logger.info("Phase 4 - Freezing stage 0")
+            logger.info("="*50)
+            
+            # Delete old optimizers
+            del model.optimizer
+            del model.optimizer_disc
+            torch.cuda.empty_cache()
+            
+            # Freeze stage 0 and stem
+            frozen_count = 0
+            trainable_backbone_params = []
+
+            for name, param in model.backbone.named_parameters():
+                if any(pattern in name for pattern in ['stages.0', 'stages[0]', 'stage1', 'stem']):
+                    if param.requires_grad:
+                        param.requires_grad = False
+                        frozen_count += 1
+                else:
+                    if param.requires_grad:
+                        trainable_backbone_params.append(param)
+            
+            # Put frozen parts in eval mode
+            model.backbone.model.stages[0].eval()
+            model.backbone.model.stem.eval()
+
+            model.optimizer = torch.optim.AdamW([
+                {'params': trainable_backbone_params, 'lr': model.cfg.TRAIN.LR},
+                {'params': model.flow.parameters(), 'lr': model.cfg.TRAIN.LR}
+            ], weight_decay=model.cfg.TRAIN.WEIGHT_DECAY)
+            
+            model.optimizer_disc = torch.optim.AdamW(
+                model.discriminator.parameters(),
+                lr=model.cfg.TRAIN.LR,
+                weight_decay=model.cfg.TRAIN.WEIGHT_DECAY
+            )
+            
+            torch.cuda.empty_cache()
+            model._phase4_frozen = True
+            
+            total_params = sum(p.numel() for p in model.parameters())
+            trainable_count = sum(p.numel() for p in model.parameters() if p.requires_grad)
+            logger.info(f"Phase 3: Additionally frozen {frozen_count} parameters in stage 1")
+            logger.info(f"Trainable parameters: {trainable_count:,} / {total_params:,} ({100*trainable_count/total_params:.1f}%)")
+            logger.info(f"GPU memory: {torch.cuda.memory_allocated()/1024**3:.2f} GB")
+    
+        # Freeze backbone
+        if epoch == 0 and not hasattr(model, '_backbone_frozen'):
+            logger.info("="*50)
+            logger.info("Freezing ConvNeXt backbone")
+            logger.info("="*50)
+
+            del model.optimizer
+            torch.cuda.empty_cache()
+            
+            # Set backbone to eval mode and freeze parameters
+            model.backbone.eval()
+            frozen_params = 0
+            for param in model.backbone.parameters():
+                if param.requires_grad:
+                    param.requires_grad = False
+                    frozen_params += 1
+                # Clear any gradient buffers
+                if param.grad is not None:
+                    param.grad = None
+            
+            logger.info(f"Frozen {frozen_params} backbone parameters")
+            
+            model.optimizer = torch.optim.AdamW(
+                model.flow.parameters(),
+                lr=model.cfg.TRAIN.LR,
+                weight_decay=model.cfg.TRAIN.WEIGHT_DECAY
+            )           
+            
+            model._backbone_frozen = True
+
+            total_params = sum(p.numel() for p in model.parameters())
+            trainable_count = sum(p.numel() for p in model.parameters() if p.requires_grad)
+            logger.info(f"Phase 5: Additionally frozen {frozen_params} parameters")
+            logger.info(f"Trainable parameters: {trainable_count:,} / {total_params:,} ({100*trainable_count/total_params:.1f}%)")
+            logger.info(f"GPU memory: {torch.cuda.memory_allocated()/1024**3:.2f} GB")
+
+        # for step, batch in tqdm(enumerate(train_dataloader)):
+        #     total_steps += 1
         for step in tqdm(range(train_dataset.dataset_len // args.batch_size)):
             total_steps += 1
 
@@ -246,66 +423,66 @@ def train(writer, logger):
 
             output = model.training_step(batch, mocap_batch)
 
-            ####################### log train loss ############################
-            if total_steps % args.log_step == 0:
-                for key in output['losses'].keys():
-                    writer.add_scalar('train/{}'.format(key), output['losses'][key].item(), total_steps)
-                    print_str = '[Step {:d}/ Epoch {:d}] [train]  {}: {:.10f}'. \
-                        format(step, epoch, key, output['losses'][key].item())
-                    logger.info(print_str)
-                    print(print_str)
+        ####################### log train loss ############################
+        if epoch % 2 == 1:
+            for key in output['losses'].keys():
+                writer.add_scalar('train/{}'.format(key), output['losses'][key].item(), total_steps)
+                print_str = '[Step {:d}/ Epoch {:d}] [train]  {}: {:.10f}'. \
+                    format(step, epoch, key, output['losses'][key].item())
+                logger.info(print_str)
+                print(print_str)
 
-            ####################### log val loss #################################
-            if total_steps % args.log_step == 0:
-                val_loss_dict = {}
-                with torch.no_grad():
-                    for test_step, test_batch in tqdm(enumerate(val_dataloader)):
-                        test_batch = to_device(test_batch, device, exclude_keys=['imgname', 'has_smpl_params', 'smpl_params_is_axis_angle'])
-                        val_output = model.validation_step(test_batch)
+        ####################### log val loss #################################
+        if epoch % 2 == 1:
+            val_loss_dict = {}
+            with torch.no_grad():
+                for test_step, test_batch in tqdm(enumerate(val_dataloader)):
+                    test_batch = to_device(test_batch, device, exclude_keys=['imgname', 'has_smpl_params', 'smpl_params_is_axis_angle'])
+                    val_output = model.validation_step(test_batch)
 
-                        for key in val_output['losses'].keys():
-                            if test_step == 0:
-                                val_loss_dict[key] = val_output['losses'][key].item()
-                            else:
-                                val_loss_dict[key] += val_output['losses'][key].item()
+                    for key in val_output['losses'].keys():
+                        if test_step == 0:
+                            val_loss_dict[key] = val_output['losses'][key].item()
+                        else:
+                            val_loss_dict[key] += val_output['losses'][key].item()
 
-                for key in val_loss_dict.keys():
-                    val_loss_dict[key] = val_loss_dict[key] / (test_step + 1)
-                    writer.add_scalar('val/{}'.format(key), val_loss_dict[key], total_steps)
-                    print_str = '[Step {:d}/ Epoch {:d}] [test]  {}: {:.10f}'. \
-                        format(step, epoch, key, val_loss_dict[key])
-                    logger.info(print_str)
-                    print(print_str)
+            for key in val_loss_dict.keys():
+                val_loss_dict[key] = val_loss_dict[key] / (test_step + 1)
+                writer.add_scalar('val/{}'.format(key), val_loss_dict[key], total_steps)
+                print_str = '[Step {:d}/ Epoch {:d}] [test]  {}: {:.10f}'. \
+                    format(step, epoch, key, val_loss_dict[key])
+                logger.info(print_str)
+                print(print_str)
 
-                # save model with best loss_keypoints_3d_mode
-                if val_loss_dict['loss_keypoints_3d_mode'] < best_loss_keypoints_3d_mode:
-                    best_loss_keypoints_3d_mode = val_loss_dict['loss_keypoints_3d_mode']
-                    save_path = os.path.join(writer.file_writer.get_logdir(), "best_model.pt")
-                    state = {
-                        "state_dict": model.state_dict(),
-                    }
-                    torch.save(state, save_path)
-                    logger.info('[*] best model saved\n')
-                    print('[*] best model saved\n')
-                if val_loss_dict['loss_keypoints_3d_full_mode'] < best_loss_keypoints_3d_mode_global:
-                    best_loss_keypoints_3d_mode_global = val_loss_dict['loss_keypoints_3d_full_mode']
-                    save_path = os.path.join(writer.file_writer.get_logdir(), "best_global_model.pt")
-                    state = {
-                        "state_dict": model.state_dict(),
-                    }
-                    torch.save(state, save_path)
-                    logger.info('[*] best global model saved\n')
-                    print('[*] best global model saved\n')
-
-            ################### save trained model #######################
-            if total_steps % args.save_step == 0:
-                save_path = os.path.join(writer.file_writer.get_logdir(), "last_model.pt")
+            # save model with best loss_keypoints_3d_mode
+            if val_loss_dict['loss_keypoints_3d_mode'] < best_loss_keypoints_3d_mode:
+                best_loss_keypoints_3d_mode = val_loss_dict['loss_keypoints_3d_mode']
+                save_path = os.path.join(writer.file_writer.get_logdir(), "best_model.pt")
                 state = {
                     "state_dict": model.state_dict(),
                 }
                 torch.save(state, save_path)
-                logger.info('[*] last model saved\n')
-                print('[*] last model saved\n')
+                logger.info('[*] best model saved\n')
+                print('[*] best model saved\n')
+            if val_loss_dict['loss_keypoints_3d_full_mode'] < best_loss_keypoints_3d_mode_global:
+                best_loss_keypoints_3d_mode_global = val_loss_dict['loss_keypoints_3d_full_mode']
+                save_path = os.path.join(writer.file_writer.get_logdir(), "best_global_model.pt")
+                state = {
+                    "state_dict": model.state_dict(),
+                }
+                torch.save(state, save_path)
+                logger.info('[*] best global model saved\n')
+                print('[*] best global model saved\n')
+
+        ################### save trained model #######################
+        if epoch % 2 == 1:
+            save_path = os.path.join(writer.file_writer.get_logdir(), "last_model.pt")
+            state = {
+                "state_dict": model.state_dict(),
+            }
+            torch.save(state, save_path)
+            logger.info('[*] last model saved\n')
+            print('[*] last model saved\n')
 
 
 

@@ -19,7 +19,7 @@ You should end up with the following folders:
 python train.py --model name
 ```
 
-Note: When using the ConvNeXt backbone it is beneficial to freeze the backbone at some point during training. In our experience this was at about epoch 15 for flows and epoch 30 for diffusion. The default value in the trainings script is 20, you might want to change it depending on your needs. Also note that training the backbone is memory intensive so you might have to reduce batch size from the default of 64 (size 32 required about 8.5GB in our experience), on the other hand, if the backbone is frozen batch size can be increased.
+Note: When using the ConvNeXt backbone it is beneficial to freeze the backbone at some point during training. In our experience this was at about epoch 15 for flows and epoch 30 for diffusion. The default value in the training script is 20, you might want to change it depending on your needs. Also note that training the backbone is memory intensive so you might have to reduce batch size from the default of 64 (size 32 required about 8.5GB in our experience), on the other hand, if the backbone is frozen batch size can be increased.
 
 ## eval
 

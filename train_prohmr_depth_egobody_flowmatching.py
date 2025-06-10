@@ -364,7 +364,7 @@ def train(writer, logger):
             logger.info(f"GPU memory: {torch.cuda.memory_allocated()/1024**3:.2f} GB")
     
         # Freeze backbone
-        if epoch == 0 and not hasattr(model, '_backbone_frozen'):
+        if epoch == 20 and not hasattr(model, '_backbone_frozen'):
             logger.info("="*50)
             logger.info("Freezing ConvNeXt backbone")
             logger.info("="*50)

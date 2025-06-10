@@ -1,4 +1,4 @@
-egobody_release/*
+egobody_release/egocentric_depth_processed
 data/*
 **/__pycache__/
 eval_result/*

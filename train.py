@@ -38,7 +38,7 @@ def main():
 
     # Mapping from model name to script path
     model_scripts = {
-        'backbone': 'train_prohmr_depth_egobody.py',
+        'backbone': 'train_prohmr_depth_egobody_backbone.py',
         'diffusion': 'train_prohmr_depth_egobody_diffusion.py',
         'flowmatching': 'train_prohmr_depth_egobody_flowmatching.py',
         'baseline' : 'train_prohmr_depth_egobody_baseline.py'

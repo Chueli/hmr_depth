@@ -26,7 +26,7 @@ def main():
 
     # Mapping from model name to script path
     model_scripts = {
-        'backbone': 'eval_regression_depth_egobody.py',
+        'backbone': 'eval_regression_depth_egobody_backbone.py',
         'diffusion': 'eval_regression_depth_egobody_diffusion.py',
         'flowmatching': 'eval_regression_depth_egobody_flowmatching.py',
         'baseline' : 'eval_regression_depth_egobody_baseline.py'

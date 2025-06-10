@@ -459,24 +459,6 @@ class ProHMRDepthEgobody(nn.Module):
         num_samples = pred_smpl_params['body_pose'].shape[1]
         ### compute G loss
         loss = self.compute_loss(batch, output, train=True)
-
-        current_epoch = getattr(self, 'current_epoch', 0)
-
-        # 1. ADAPTIVE ADVERSARIAL WEIGHT
-        adversarial_weight = self.get_adversarial_weight(current_epoch)
-
-        # 2. DISCRIMINATOR LEARNING RATE SCHEDULING  
-        if current_epoch == 15 and not getattr(self, 'disc_lr_reduced', False):
-            print("🔧 Reducing discriminator LR at epoch 15")
-            for param_group in self.optimizer_disc.param_groups:
-                param_group['lr'] *= 0.5
-            self.disc_lr_reduced = True
-        
-        if current_epoch == 25 and not getattr(self, 'disc_lr_reduced_2', False):
-            print("🔧 Further reducing discriminator LR at epoch 25")
-            for param_group in self.optimizer_disc.param_groups:
-                param_group['lr'] *= 0.5
-            self.disc_lr_reduced_2 = True
         
         # # ### G adv loss
         disc_out = self.discriminator(
@@ -490,7 +472,7 @@ class ProHMRDepthEgobody(nn.Module):
         
 
 
-        loss = loss + adversarial_weight * loss_adv
+        loss = loss + self.cfg.LOSS_WEIGHTS.ADVERSARIAL * loss_adv
         self.optimizer.zero_grad()
         # self.manual_backward(loss)
         loss.backward()
@@ -567,18 +549,3 @@ class ProHMRDepthEgobody(nn.Module):
             }
         
         return self._default_params_cache[cache_key]
-    
-    def get_adversarial_weight(self, epoch):
-        """Conservative but effective adversarial weight scheduling"""
-        base = self.cfg.LOSS_WEIGHTS.ADVERSARIAL  
-        
-        if epoch < 10:
-            return base * 1.0      # Full strength, proven effective
-        elif epoch < 15:
-            return base * 0.7      # Slight reduction  
-        elif epoch < 20:
-            return base * 0.5      # Moderate reduction
-        elif epoch < 30:
-            return base * 0.2      # Significant reduction
-        else:
-            return base * 0.05     # Minimal influence

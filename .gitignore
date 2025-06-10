@@ -3,5 +3,4 @@ data/*
 **/__pycache__/
 eval_result/*
 tmp/*
-prep_data/*
 .vscode/*
